@@ -7,27 +7,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-def init_weights(net):
-
-    for m in net.modules():
-        if isinstance(m, nn.Conv1d):
-            nn.init.xavier_uniform_(m.weight)
-            if m.bias is not None:
-                nn.init.constant_(m.bias, 0)
-        elif isinstance(m, nn.BatchNorm1d):
-            nn.init.constant_(m.weight, 1)
-            nn.init.constant_(m.bias, 0)
-        elif isinstance(m, nn.Linear):
-            nn.init.xavier_uniform_(m.weight)
-
-            if m.bias is not None:
-                nn.init.constant_(m.bias, 0)
-    return net
-
 class ResSEBlock(nn.Module):
     
     expansion = 1
-
     def __init__(self, inChannels, outChannels, stride=1, downsample=None, reduction=8):
         super(ResSEBlock, self).__init__()
         self.conv1      = nn.Conv1d(inChannels, outChannels, kernel_size=3, stride=stride, padding=1, bias=False)
@@ -228,34 +210,92 @@ class FeatureExtraction(nn.Module):
         return features
         
 class HalfResNet34(nn.Module):
-    def __init__(self,block,layers,num_filters,speaker_embedding):
+    def __init__(self,block,layers,num_filters,speaker_embedding, aggregation = 'SAP'):
         super(HalfResNet34,self).__init__()
-        
-
-        self.inplanes       = num_filters[0]
-        
-        
-        self.conv1      = nn.Conv1d(128, num_filters[0] , kernel_size=7, stride=2, padding=3,
-                               bias=False)
-        self.bn1        = nn.BatchNorm1d(num_filters[0])
-        self.relu       = nn.ReLU(inplace=True)
-        self.maxPool    = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
-        
-        
-        # 3. residual conv.
-        
-        self.layer1 = self._make_layer(block, num_filters[0], layers[0])
-        self.layer2 = self._make_layer(block, num_filters[1], layers[1], stride=2)
-        self.layer3 = self._make_layer(block, num_filters[2], layers[2], stride=2)
-        self.layer4 = self._make_layer(block, num_filters[3], layers[3], stride=2)
     
-        self.avgpool = nn.AvgPool1d(9, stride = 1)
+        self.inplanes       = num_filters[0]
+        self.aggregation    = aggregation
         
+        self.conv1          = nn.Conv1d(128, num_filters[0] , kernel_size=7, stride=2, padding=3,
+                                        bias=False)
+        self.bn1            = nn.BatchNorm1d(num_filters[0])
+        self.relu           = nn.ReLU(inplace=True)
+        self.maxPool        = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
         
+        self.layer1         = self._make_layer(block, num_filters[0], layers[0])
+        self.layer2         = self._make_layer(block, num_filters[1], layers[1], stride=2)
+        self.layer3         = self._make_layer(block, num_filters[2], layers[2], stride=2)
+        self.layer4         = self._make_layer(block, num_filters[3], layers[3], stride=2)
+    
+        self.avgpool        = nn.AvgPool1d(9, stride = 1)
+        
+        # utterance level feature extraction
+        if self.aggregation == "SAP":
+            self.sap_linear     = nn.Linear(num_filters[3] * block.expansion, num_filters[3] * block.expansion)
+            self.attention      = self.new_parameter(num_filters[3] * block.expansion, 1)
+            out_dim             = num_filters[3] * block.expansion
+        else:
+            raise ValueError('Undefined encoder')
+
+        self.fc             = nn.Linear(out_dim, speaker_embedding)
+        
+    def new_parameter(self, *size):
+        out = nn.Parameter(torch.FloatTensor(*size))
+        nn.init.xavier_normal_(out)
+        return out
+    
+    def _make_layer(self, block, planes, blocks, stride=1):
+        
+        downsample = None
+        if stride != 1 or self.inplanes != planes * block.expansion:
+            downsample = nn.Sequential(
+                nn.Conv1d(self.inplanes, planes * block.expansion,
+                          kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm1d(planes * block.expansion),
+            )
+
+        layers = []
+        layers.append(block(self.inplanes, planes, stride, downsample))
+        
+        self.inplanes = planes * block.expansion
+        for i in range(1, blocks):
+            layers.append(block(self.inplanes, planes))
+
+        return nn.Sequential(*layers)
+    
     def forward(self,x):
         
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxPool(x)
         
-        return x
+        
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        x = self.avgpool(x)
+
+
+        if self.aggregation == "SAP":
+            x = x.permute(0, 2, 1)
+            h = torch.tanh(self.sap_linear(x))
+            w = torch.matmul(h, self.attention).squeeze(dim=2)
+            w = F.softmax(w, dim=1).view(x.size(0), x.size(1), 1)
+            x = torch.sum(x * w, dim=1)
+        else:
+            raise ValueError('Undefined encoder')
+
+        x = x.view(x.size()[0], -1)
+        
+        spk_embedding = self.fc(x)
+
+        print(spk_embedding.shape)
+        
+        return spk_embedding
+
         
         
 class ConvTasResNet(nn.Module):
@@ -266,18 +306,23 @@ class ConvTasResNet(nn.Module):
         # mean and variance normalization is performed by using instance norm
         self.mvn            = nn.InstanceNorm1d(1)
         self.fe             = FeatureExtraction(H = 512, L = 40, P = 128, M = 256, B = 8, R = 3)
-        
         self.speaker_model  = HalfResNet34(ResSEBlock, layers = [3,4,6,3], num_filters = [32,64,128,256],speaker_embedding = 256)
         
-        
+        # init
+        for m in self.modules():
+            if isinstance(m, nn.Conv1d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
         
     def forward(self,x):
         
-        x           = self.mvn(x).detach()
-        features    = self.fe(x)
-        print(features.shape)
-        
-        return x
+        x                   = self.mvn(x).detach()
+        features            = self.fe(x)
+        speaker_embedding   = self.speaker_model(features)
+
+        return speaker_embedding
 
 
 if __name__ == '__main__':
@@ -286,6 +331,9 @@ if __name__ == '__main__':
     segments = torch.randn([4,1,65536])
     
     model   = ConvTasResNet()
+        
+    model_params    = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print('==> model total parameters: {}'.format(model_params))
     
     output = model(segments)
 
