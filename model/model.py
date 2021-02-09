@@ -8,7 +8,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class ResSEBlock(nn.Module):
-    
     expansion = 1
     def __init__(self, inChannels, outChannels, stride=1, downsample=None, reduction=8):
         super(ResSEBlock, self).__init__()
@@ -116,7 +115,6 @@ class ConvSEBlock(nn.Module):
                  stride = 1, dilation = 1, norm_type = None, causal = False):
         super(ConvSEBlock, self).__init__()
         
-        
         # 128 channels -> 256 channels
         self.conv1x1        = nn.Conv1d(in_channels = in_channels, out_channels = out_channels, kernel_size = 1)
         self.prelu_1        = nn.PReLU()
@@ -144,17 +142,13 @@ class ConvSEBlock(nn.Module):
         out = self.dwconv(out)
         out = self.prelu_2(out)
         out = self.norm_2(out)
-        
+    
         out = self.pointwise_conv(out)
-
         out = self.se(out)
     
         output = identity + out
         
-        #return output
-        
-        return F.relu(output)
-
+        return F.relu(output) # return output
 
 class FeatureExtraction(nn.Module):
     def __init__(self,H,L,P,M,B,R):
@@ -176,8 +170,6 @@ class FeatureExtraction(nn.Module):
         self.encoder        = nn.Conv1d(1,H, kernel_size = L, stride = L//2)
         self.encoder_bn     = nn.BatchNorm1d(H)
         self.encoder_relu   = nn.ReLU()
-        
-        
         # --------------------------- Extractor -----------------------------------
         
         self.botteneck      = nn.Conv1d(in_channels = H, out_channels = P, kernel_size = 1, stride = 1)
@@ -188,7 +180,6 @@ class FeatureExtraction(nn.Module):
         self.TCN            = nn.Sequential(*layer)
         self.gNL            = GlobalLayerNorm(P, elementwise_affine = False)
         
-    
     def _make_TCN_layer(self,P,M,B):
         
         layers = []
@@ -202,8 +193,7 @@ class FeatureExtraction(nn.Module):
         x = self.encoder_bn(x)
         x = self.encoder_relu(x)
         
-        x = self.botteneck(x)
-        
+        x        = self.botteneck(x)
         features = self.TCN(x)
         features = self.gNL(features)
         
@@ -270,15 +260,12 @@ class HalfResNet34(nn.Module):
         x = self.relu(x)
         x = self.maxPool(x)
         
-        
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
-
         x = self.avgpool(x)
-
-
+        
         if self.aggregation == "SAP":
             x = x.permute(0, 2, 1)
             h = torch.tanh(self.sap_linear(x))
@@ -289,19 +276,13 @@ class HalfResNet34(nn.Module):
             raise ValueError('Undefined encoder')
 
         x = x.view(x.size()[0], -1)
-        
         spk_embedding = self.fc(x)
-
-        print(spk_embedding.shape)
         
         return spk_embedding
 
-        
-        
 class ConvTasResNet(nn.Module):
     def __init__(self):
         super(ConvTasResNet,self).__init__()
-        
         
         # mean and variance normalization is performed by using instance norm
         self.mvn            = nn.InstanceNorm1d(1)
@@ -328,13 +309,10 @@ class ConvTasResNet(nn.Module):
 if __name__ == '__main__':
     
     # inputs: [batch, channel, n_samples (= 65536)]
-    segments = torch.randn([4,1,65536])
-    
-    model   = ConvTasResNet()
+    segments        = torch.randn([4,1,65536])
+    model           = ConvTasResNet()
         
     model_params    = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('==> model total parameters: {}'.format(model_params))
-    
-    output = model(segments)
-
+    output          = model(segments)
     
