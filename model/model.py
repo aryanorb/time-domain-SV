@@ -25,37 +25,29 @@ class ResSEBlock(nn.Module):
 
     def forward(self, x):
         
-        residualVec = x
+        residual = x
 
-        outVec = self.conv1(x)
-        outVec = self.relu(outVec)
-        outVec = self.bn1(outVec)
+        output = self.conv1(x)
+        output = self.relu(output)
+        output = self.bn1(output)
 
-        outVec = self.conv2(outVec)
-        outVec = self.bn2(outVec)
-        outVec = self.se(outVec)
+        output = self.conv2(output)
+        output = self.bn2(output)
+        output = self.se(output)
 
         if self.downsample is not None:
-            residualVec = self.downsample(x)
+            residual = self.downsample(x)
 
-        outVec += residualVec
-        outVec = self.relu(outVec)
-        return outVec
+        output += residual
+        output = self.relu(output)
+        return output
     
 
 class GlobalLayerNorm(nn.Module):
-    '''
-       Calculate Global Layer Normalization
-       dim: (int or list or torch.Size) –
-            input shape from an expected input of size
-       eps: a value added to the denominator for numerical stability.
-       elementwise_affine: a boolean value that when set to True, 
-           this module has learnable per-element affine parameters 
-           initialized to ones (for weights) and zeros (for biases).
-    '''
-
     def __init__(self, dim, eps=1e-05, elementwise_affine=True):
         super(GlobalLayerNorm, self).__init__()
+        
+        # gln: mean,var N x 1 x 1
         self.dim = dim
         self.eps = eps
         self.elementwise_affine = elementwise_affine
@@ -69,20 +61,17 @@ class GlobalLayerNorm(nn.Module):
 
     def forward(self, x):
 
-        # gln: mean,var N x 1 x 1
-        
         if x.dim() != 3:
             raise RuntimeError("{} accept 3D tensor as input".format(
                 self.__name__))
         """
-        gNL: the feature is normalized over both the channel and the time dimention
+        gNL: the feature is normalized over both the channel and the time dimention (gln: mean,var Batch x 1 x 1)
         
-        x: [batch, channel, n_sample_output (= time )]
-        
+        args:
+            x: [batch, channel, n_sample_output (= time )]
         """
-        mean = torch.mean(x, (1, 2), keepdim=True)
-        var = torch.mean((x-mean)**2, (1, 2), keepdim=True)
-  
+        mean    = torch.mean(x, (1, 2), keepdim=True)
+        var     = torch.mean((x-mean)**2, (1, 2), keepdim=True)
         
         # N x C x L
         if self.elementwise_affine:
