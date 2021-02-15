@@ -3,6 +3,9 @@
 @author: Sangwook Han (swhan9873@gm.gist.ac.kr)
 """
 
+# ref : https://github.com/clovaai/voxceleb_trainer/tree/master/models
+
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
